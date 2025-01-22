@@ -60,7 +60,7 @@ if __name__ == "__main__":
         num_bonds=4,
         hidden_dim=60,
         out_dim=1,
-        heads=[6, 6, 6, 6, 6, 6],
+        heads=[4,4,4,4,4,4],
         num_layers=6,
     )
     summary(model)
