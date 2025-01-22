@@ -163,7 +163,7 @@ class GATregression(nn.Module):
                         hidden_dim,
                         heads[i],
                         activation=F.relu,
-                        residual=True,
+                        residual=False,
                         num_atoms=num_atoms,
                         num_bonds=num_bonds,
                         feat_drop=0.2,

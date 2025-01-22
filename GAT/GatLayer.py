@@ -75,26 +75,36 @@ class GatModule(nn.Module):
 
         # Residual connection (optional)
         if residual:
-            self.residual_fc = nn.Linear(in_feats, num_heads * out_feats)
+            self.residual_fc = nn.Linear(in_feats, num_heads * out_feats, bias=False)
         self.residual = residual
 
         # Initialize the model parameters
-        if not regresion:
-            self.resetParameters()
+        
+        self.resetParameters()
 
     def resetParameters(self):
         """
         Initialize the parameters of the model using Xavier Normalization.
         This includes the fully connected layer and the attention parameters.
         """
-        gain = nn.init.calculate_gain("relu")
-        nn.init.xavier_normal_(self.fc.weight, gain=gain)
-        nn.init.xavier_normal_(self.attn_l, gain=gain)
-        nn.init.xavier_normal_(self.attn_r, gain=gain)
+        if not self.regresion:
+            gain = nn.init.calculate_gain("relu")
+            nn.init.xavier_normal_(self.fc.weight, gain=gain)
+            nn.init.xavier_normal_(self.attn_l, gain=gain)
+            nn.init.xavier_normal_(self.attn_r, gain=gain)
 
         # Initialize residual connection (if used)
         if self.residual:
+            gain = nn.init.calculate_gain("relu")
             nn.init.xavier_normal_(self.residual_fc.weight, gain=gain)
+
+        if self.regresion:
+            gain = nn.init.calculate_gain("relu")
+            nn.init.xavier_normal_(self.node_encoder.weight, gain=gain)
+            nn.init.xavier_normal_(self.edge_encoder.weight, gain=gain)
+            nn.init.xavier_normal_(self.attn_m, gain=gain)
+            nn.init.xavier_normal_(self.attn_l, gain=gain)
+            nn.init.xavier_normal_(self.attn_r, gain=gain)
 
     def edge_udf(self, edges):
         e_att = (edges.data["e"] * self.attn_m).sum(dim=-1).unsqueeze(-1)
