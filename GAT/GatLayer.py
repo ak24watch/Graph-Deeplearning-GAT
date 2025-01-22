@@ -33,15 +33,37 @@ class GatModule(nn.Module):
         negative_slope=0.2,
         residual=False,
         activation=None,
+        regresion=True,
+        num_atoms=0,
+        num_bonds=0,
     ):
         super().__init__()
 
-        # Define a linear transformation for input features
-        self.fc = nn.Linear(in_feats, out_feats * num_heads, bias=False)
+        self.regresion = regresion
+        if regresion:
+            self.node_encoder = nn.Embedding(num_atoms, out_feats * num_heads)
+            self.edge_encoder = nn.Embedding(num_bonds, out_feats * num_heads)
+            self.attn_l = nn.Parameter(
+                torch.FloatTensor(size=(1, num_heads, out_feats))
+            )
+            self.attn_r = nn.Parameter(
+                torch.FloatTensor(size=(1, num_heads, out_feats))
+            )
+            self.attn_m = nn.Parameter(
+                torch.FloatTensor(size=(1, num_heads, out_feats))
+            )
 
-        # Attention mechanism parameters (left and right side)
-        self.attn_l = nn.Parameter(torch.FloatTensor(size=(1, num_heads, out_feats)))
-        self.attn_r = nn.Parameter(torch.FloatTensor(size=(1, num_heads, out_feats)))
+        else:
+            # Define a linear transformation for input features
+            self.fc = nn.Linear(in_feats, out_feats * num_heads, bias=False)
+
+            # Attention mechanism parameters (left and right side)
+            self.attn_l = nn.Parameter(
+                torch.FloatTensor(size=(1, num_heads, out_feats))
+            )
+            self.attn_r = nn.Parameter(
+                torch.FloatTensor(size=(1, num_heads, out_feats))
+            )
 
         # Store relevant parameters
         self.num_heads = num_heads
@@ -57,7 +79,8 @@ class GatModule(nn.Module):
         self.residual = residual
 
         # Initialize the model parameters
-        self.resetParameters()
+        if not regresion:
+            self.resetParameters()
 
     def resetParameters(self):
         """
@@ -73,7 +96,14 @@ class GatModule(nn.Module):
         if self.residual:
             nn.init.xavier_normal_(self.residual_fc.weight, gain=gain)
 
-    def forward(self, graph, feat, edge_weight=None, get_attention=False):
+    def edge_udf(self, edges):
+        e_att = (edges.data["e"] * self.attn_m).sum(dim=-1).unsqueeze(-1)
+        e_att = e_att + edges.src["el"] + edges.dst["er"]
+        return {"e": e_att}
+
+    def forward(
+        self, graph, feat, edge_weight=None, get_attention=False, edge_feat=None
+    ):
         """
         Forward pass for the GAT layer.
 
@@ -88,12 +118,29 @@ class GatModule(nn.Module):
         """
         with graph.local_scope():
             # Dropout applied to the input features
-            h_src = h_dst = self.feat_drop(feat)
+            # torch.set_printoptions(threshold=torch.inf)
+            # print("\nnode feat", feat)
+            # print("Min index:", feat.min())
+            # print("Max index:", feat.max())
 
-            # Compute the input features for attention mechanism (split into multiple heads)
-            feat_src = feat_dst = self.fc(h_src).view(
-                -1, self.num_heads, self.out_feats
+            h_src = h_dst = (
+                feat.to(torch.long) if self.regresion else self.feat_drop(feat)
             )
+            if self.regresion:
+                feat_src = self.node_encoder(h_src).view(
+                    -1, self.num_heads, self.out_feats
+                )
+                feat_dst = self.node_encoder(h_dst).view(
+                    -1, self.num_heads, self.out_feats
+                )
+                edge_feat = self.edge_encoder(edge_feat).view(
+                    -1, self.num_heads, self.out_feats
+                )
+            else:
+                # Compute the input features for attention mechanism (split into multiple heads)
+                feat_src = feat_dst = self.fc(h_src).view(
+                    -1, self.num_heads, self.out_feats
+                )
 
             # Attention scores (left and right side)
             el = (feat_src * self.attn_l).sum(dim=-1).unsqueeze(-1)
@@ -104,7 +151,11 @@ class GatModule(nn.Module):
             graph.dstdata.update({"er": er})
 
             # Apply edge function to compute attention scores
-            graph.apply_edges(fn.u_add_v("el", "er", "e"))
+            if self.regresion:
+                graph.edata["e"] = edge_feat.to(torch.long)
+                graph.apply_edges(self.edge_udf)
+            else:
+                graph.apply_edges(fn.u_add_v("el", "er", "e"))
             e = self.leaky_relu(graph.edata.pop("e"))
 
             # Compute normalized attention scores using softmax
@@ -115,13 +166,17 @@ class GatModule(nn.Module):
             rst = graph.dstdata["ft"]
 
             # Add residual connection (if enabled)
-            if self.residual:
+            if self.residual and not self.regresion:
                 res = self.residual_fc(h_dst).view(-1, self.num_heads, self.out_feats)
                 rst = rst + res
+            else:
+                rst = rst + feat_dst
 
             # Apply activation function (if any)
             if self.activation:
                 rst = self.activation(rst)
+            if self.regresion:
+                rst = self.feat_drop(rst)
 
             # Optionally return the attention coefficients
             if get_attention:

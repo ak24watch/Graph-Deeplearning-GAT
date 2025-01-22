@@ -1,7 +1,8 @@
 import torch.nn as nn
 import torch.nn.functional as F
 from GatLayer import GatModule
-
+from dgl.nn import SumPooling, AvgPooling
+import torch
 
 class GAT(nn.Module):
     """
@@ -138,5 +139,81 @@ class GATppi(nn.Module):
 
         # Aggregate the results (using mean) and return
         h = h.mean(1)
+
+        return h
+
+
+class GATregression(nn.Module):
+    def __init__(self, num_atoms, num_bonds, hidden_dim, out_dim, heads, num_layers):
+        super().__init__()
+        self.pool = AvgPooling()
+        self.layers = nn.ModuleList()
+        self.output = nn.Sequential(
+            nn.Linear(out_dim * heads[-1], hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, out_dim),
+        )
+        self.resid = nn.ModuleList()
+
+        for i in range(num_layers):
+            if i == 0:
+                self.layers.append(
+                    GatModule(
+                        hidden_dim,
+                        hidden_dim,
+                        heads[i],
+                        activation=F.relu,
+                        residual=True,
+                        num_atoms=num_atoms,
+                        num_bonds=num_bonds,
+                        feat_drop=0.2,
+                        attn_drop=0.2,
+                    )
+                )
+                self.resid.append(nn.Linear(hidden_dim * heads[i], out_dim * heads[-1]))
+            elif i == num_layers - 1:
+                self.layers.append(
+                    GatModule(
+                        hidden_dim * heads[i - 1],
+                        out_dim,
+                        heads[i],
+                        activation=F.relu,
+                        residual=True,
+                        num_atoms=num_atoms,
+                        num_bonds=num_bonds,
+                    )
+                )
+
+            else:
+                self.layers.append(
+                    GatModule(
+                        hidden_dim * heads[i - 1],
+                        hidden_dim,
+                        heads[i],
+                        activation=F.relu,
+                        residual=True,
+                        num_atoms=num_atoms,
+                        num_bonds=num_bonds,
+                    ),
+                )
+                self.resid.append(nn.Linear(hidden_dim * heads[i], out_dim * heads[-1]))
+
+    def forward(self, g, node_feats, edge_feats):
+        each_layer_output = []
+        for i, layer in enumerate(self.layers):
+            h = layer(g, node_feats, edge_feat=edge_feats)
+            h = h.flatten(1)
+            # print("h.shape")
+            # print(h.shape)
+            if i != len(self.layers) - 1:
+                each_layer_output.append(h)
+
+        output = []
+        for i, h in enumerate(each_layer_output):
+            output.append(self.resid[i](h))
+        h = torch.stack(output, dim=0).sum(dim=0)
+        # print("h.shape", h.shape)
+        h = self.pool(g, h)
+        h = self.output(h)
 
         return h
